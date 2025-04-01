@@ -22,7 +22,7 @@ public class Form1 : Form
     private Button sendButton;
     private ListView sentList, receivedList, readyList;
     private TcpListener listener;
-    
+
     // Sequencing components
     private int messageCounter = 1;
     private int globalSequence = 0;
@@ -60,25 +60,30 @@ public class Form1 : Form
 
     private ListView CreateListView(string title, int x, int y)
     {
-        return new ListView
+        ListView listView = new ListView
         {
             View = View.Details,
-            Columns = { title },
             Location = new Point(x, y),
             Size = new Size(200, 150),
-            HeaderStyle = ColumnHeaderStyle.None
+            HeaderStyle = ColumnHeaderStyle.Nonclickable  // Change from None to Nonclickable
         };
+
+        // Add column with proper width
+        listView.Columns.Add(title, listView.Width - 5);
+
+        return listView;
     }
+
 
     private async void SendMessageHandler(object sender, EventArgs e)
     {
         string messageId = $"Msg#{messageCounter++} from {this.Text} at {DateTime.Now:HH:mm:ss}";
-        
+
         lock (sentList)
         {
             sentList.Items.Add(messageId);
         }
-        
+
         using (TcpClient networkClient = new TcpClient("localhost", 8081))
         {
             byte[] data = Encoding.UTF8.GetBytes(messageId);
@@ -118,9 +123,9 @@ public class Form1 : Form
                 }
                 else
                 {
-                    receivedList.Invoke((MethodInvoker)(() => 
+                    receivedList.Invoke((MethodInvoker)(() =>
                         receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
-                    
+
                     // Handle our own messages directly
                     lock (sequenceLock)
                     {
@@ -146,7 +151,7 @@ public class Form1 : Form
         if (parts.Length < 3) return;
 
         string originalMessage = parts[1];
-        
+
         lock (sequenceLock)
         {
             if (!messageSequences.ContainsKey(originalMessage))
@@ -161,6 +166,11 @@ public class Form1 : Form
     private async void BroadcastSequence(string message, int sequence)
     {
         string sequenceMessage = $"SEQ:{sequence}:{message}";
+
+        // Process the sequence message locally first
+        ProcessSequenceMessage(sequenceMessage);
+
+        // Then broadcast to others
         foreach (int port in new[] { 8083, 8084, 8085, 8086 })
         {
             try
@@ -177,4 +187,15 @@ public class Form1 : Form
             }
         }
     }
+
+    private void ProcessSequenceMessage(string message)
+    {
+        var parts = message.Split(':');
+        int sequence = int.Parse(parts[1]);
+        string originalMessage = parts[2];
+
+        readyList.Invoke((MethodInvoker)(() =>
+            readyList.Items.Add($"[SEQ {sequence}] {originalMessage}")));
+    }
+
 }

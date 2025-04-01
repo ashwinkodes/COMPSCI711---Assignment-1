@@ -22,7 +22,7 @@ public class Form1 : Form
     private Button sendButton;
     private ListView sentList, receivedList, readyList;
     private TcpListener listener;
-    
+
     private int messageCounter = 1;
     private SortedDictionary<int, string> deliveryQueue = new SortedDictionary<int, string>();
     private int nextExpectedSequence = 1;
@@ -59,24 +59,30 @@ public class Form1 : Form
 
     private ListView CreateListView(string title, int x, int y)
     {
-        return new ListView
+        ListView listView = new ListView
         {
             View = View.Details,
-            Columns = { title },
             Location = new Point(x, y),
             Size = new Size(200, 150),
-            HeaderStyle = ColumnHeaderStyle.None
+            HeaderStyle = ColumnHeaderStyle.Nonclickable  // Change from None to Nonclickable
         };
+
+        // Add column with proper width
+        listView.Columns.Add(title, listView.Width - 5);
+
+        return listView;
     }
+
 
     private async void SendMessageHandler(object sender, EventArgs e)
     {
         string messageId = $"Msg#{messageCounter++} from {this.Text}";
-        
-        lock(listLock) {
+
+        lock (listLock)
+        {
             sentList.Items.Add(messageId);
         }
-        
+
         using (TcpClient networkClient = new TcpClient("localhost", 8081))
         {
             byte[] data = Encoding.UTF8.GetBytes(messageId);
@@ -105,9 +111,9 @@ public class Form1 : Form
         }
         else
         {
-            receivedList.Invoke((MethodInvoker)(() => 
+            receivedList.Invoke((MethodInvoker)(() =>
                 receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
-            
+
             using (TcpClient seqClient = new TcpClient("localhost", 8082))
             {
                 string request = $"SEQREQ:{message}:{DateTime.UtcNow.Ticks}";
@@ -122,16 +128,16 @@ public class Form1 : Form
         var parts = message.Split(':');
         int sequence = int.Parse(parts[1]);
         string originalMessage = parts[2];
-        
+
         lock (deliveryQueue)
         {
             deliveryQueue[sequence] = originalMessage;
-            
+
             while (deliveryQueue.ContainsKey(nextExpectedSequence))
             {
-                readyList.Invoke((MethodInvoker)(() => 
+                readyList.Invoke((MethodInvoker)(() =>
                     readyList.Items.Add($"[SEQ {nextExpectedSequence}] {deliveryQueue[nextExpectedSequence]}")));
-                
+
                 deliveryQueue.Remove(nextExpectedSequence);
                 nextExpectedSequence++;
             }
