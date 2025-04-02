@@ -33,6 +33,7 @@ public class Form1 : Form
         this.Text = "Middleware 1 (Sequencer)";
         this.ClientSize = new Size(1000, 400);
         InitializeGUI();
+
         listener = new TcpListener(IPAddress.Any, 8082);
         listener.Start();
         ListenForClientsAsync();
@@ -48,7 +49,6 @@ public class Form1 : Form
         };
         sendButton.Click += SendMessageHandler;
 
-        // Adjust positions with more spacing (350 pixels apart instead of 215)
         sentList = CreateListView("Sent Messages", 35, 50);
         receivedList = CreateListView("Received Messages", 385, 50);
         readyList = CreateListView("Ready Messages", 735, 50);
@@ -61,7 +61,7 @@ public class Form1 : Form
 
     private ListView CreateListView(string title, int x, int y)
     {
-        ListView listView = new ListView
+        return new ListView
         {
             View = View.Details,
             Location = new Point(x, y),
@@ -70,25 +70,24 @@ public class Form1 : Form
             FullRowSelect = true,
             GridLines = true,
             MultiSelect = false,
-            Scrollable = true
+            Scrollable = true,
+            Columns = { title }
         };
-        listView.Columns.Add(title, -2);
-        return listView;
     }
 
     private async void SendMessageHandler(object sender, EventArgs e)
     {
         string messageId = $"Msg#{messageCounter++} from {this.Text} at {DateTime.Now:HH:mm:ss}";
-        lock (sentList)
-        {
-            sentList.Items.Add(messageId);
-        }
+        lock (sentList) sentList.Items.Add(messageId);
 
         using (TcpClient networkClient = new TcpClient("localhost", 8081))
         {
             byte[] data = Encoding.UTF8.GetBytes(messageId);
             await networkClient.GetStream().WriteAsync(data, 0, data.Length);
         }
+
+        // Request sequence for our own message
+        await RequestSequenceAssignment(messageId);
     }
 
     private async void ListenForClientsAsync()
@@ -125,22 +124,6 @@ public class Form1 : Form
                 {
                     receivedList.Invoke((MethodInvoker)(() =>
                         receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
-
-                    // For sequencer's own messages, directly sequence them
-                    // For messages from other middleware, they'll request sequencing via SEQREQ
-                    if (message.Contains("from Middleware 1"))
-                    {
-                        // Only assign sequence for our own messages that we've sent
-                        lock (sequenceLock)
-                        {
-                            if (!messageSequences.ContainsKey(message))
-                            {
-                                globalSequence++;
-                                messageSequences[message] = globalSequence;
-                                BroadcastSequence(message, globalSequence);
-                            }
-                        }
-                    }
                 }
             }
         }
@@ -157,60 +140,51 @@ public class Form1 : Form
         string originalMessage = parts[1];
 
         int sequence;
-
         lock (sequenceLock)
         {
-            // Check if this message already has a sequence number
-            if (messageSequences.ContainsKey(originalMessage))
+            if (!messageSequences.TryGetValue(originalMessage, out sequence))
             {
-                // Use existing sequence number
-                sequence = messageSequences[originalMessage];
-            }
-            else
-            {
-                // Assign new sequence number
                 sequence = ++globalSequence;
                 messageSequences[originalMessage] = sequence;
             }
         }
 
-        // Broadcast with the correct sequence number
         await BroadcastSequence(originalMessage, sequence);
     }
 
-private async Task BroadcastSequence(string message, int sequence)
-{
-    string sequenceMessage = $"SEQ:{sequence}:{message}";
-    
-    // Process locally FIRST
-    ProcessSequenceMessage(sequenceMessage);
-    
-    // Send to all OTHER middleware (not self again since we already processed it)
-    foreach (int port in new[] { 8083, 8084, 8085, 8086 })
+    private async Task BroadcastSequence(string message, int sequence)
     {
-        try
+        string sequenceMessage = $"SEQ:{sequence}:{message}";
+
+        // Process locally first
+        readyList.Invoke((MethodInvoker)(() =>
+            readyList.Items.Add($"[SEQ {sequence}] {message}")));
+
+        // Broadcast to all other middlewares
+        foreach (int port in new[] { 8083, 8084, 8085, 8086 })
         {
-            using (TcpClient client = new TcpClient("localhost", port))
+            try
             {
-                byte[] data = Encoding.UTF8.GetBytes(sequenceMessage);
-                await client.GetStream().WriteAsync(data, 0, data.Length);
+                using (TcpClient client = new TcpClient("localhost", port))
+                {
+                    byte[] data = Encoding.UTF8.GetBytes(sequenceMessage);
+                    await client.GetStream().WriteAsync(data, 0, data.Length);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error broadcasting to port {port}: {ex.Message}");
             }
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error broadcasting to port {port}: {ex.Message}");
-        }
     }
-}
 
-
-    private void ProcessSequenceMessage(string message)
+    private async Task RequestSequenceAssignment(string message)
     {
-        var parts = message.Split(':');
-        int sequence = int.Parse(parts[1]);
-        string originalMessage = parts[2];
-
-        readyList.Invoke((MethodInvoker)(() =>
-            readyList.Items.Add($"[SEQ {sequence}] {originalMessage}")));
+        using (TcpClient seqClient = new TcpClient("localhost", 8082))
+        {
+            string request = $"SEQREQ:{message}:{DateTime.UtcNow.Ticks}";
+            byte[] data = Encoding.UTF8.GetBytes(request);
+            await seqClient.GetStream().WriteAsync(data, 0, data.Length);
+        }
     }
 }
