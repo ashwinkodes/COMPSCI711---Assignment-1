@@ -27,13 +27,16 @@ public class Form1 : Form
     private int globalSequence = 0;
     private readonly object sequenceLock = new object();
     private Dictionary<string, int> messageSequences = new Dictionary<string, int>();
+    private SortedDictionary<int, string> deliveryQueue = new SortedDictionary<int, string>();
+    private int nextExpectedSequence = 1;
+    private readonly object queueLock = new object();
 
     public Form1()
     {
         this.Text = "Middleware 1 (Sequencer)";
         this.ClientSize = new Size(1000, 400);
         InitializeGUI();
-
+        
         listener = new TcpListener(IPAddress.Any, 8082);
         listener.Start();
         ListenForClientsAsync();
@@ -79,14 +82,13 @@ public class Form1 : Form
     {
         string messageId = $"Msg#{messageCounter++} from {this.Text} at {DateTime.Now:HH:mm:ss}";
         lock (sentList) sentList.Items.Add(messageId);
-
+        
         using (TcpClient networkClient = new TcpClient("localhost", 8081))
         {
             byte[] data = Encoding.UTF8.GetBytes(messageId);
             await networkClient.GetStream().WriteAsync(data, 0, data.Length);
         }
-
-        // Request sequence for our own message
+        
         await RequestSequenceAssignment(messageId);
     }
 
@@ -114,7 +116,7 @@ public class Form1 : Form
             {
                 byte[] buffer = new byte[1024];
                 int bytesRead = await client.GetStream().ReadAsync(buffer, 0, buffer.Length);
-                string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim('\0');
 
                 if (message.StartsWith("SEQREQ:"))
                 {
@@ -155,12 +157,11 @@ public class Form1 : Form
     private async Task BroadcastSequence(string message, int sequence)
     {
         string sequenceMessage = $"SEQ:{sequence}:{message}";
+        
+        // Process locally through queue
+        ProcessSequenceMessage(sequenceMessage);
 
-        // Process locally first
-        readyList.Invoke((MethodInvoker)(() =>
-            readyList.Items.Add($"[SEQ {sequence}] {message}")));
-
-        // Broadcast to all other middlewares
+        // Broadcast to other middlewares
         foreach (int port in new[] { 8083, 8084, 8085, 8086 })
         {
             try
@@ -174,6 +175,28 @@ public class Form1 : Form
             catch (Exception ex)
             {
                 Console.WriteLine($"Error broadcasting to port {port}: {ex.Message}");
+            }
+        }
+    }
+
+    private void ProcessSequenceMessage(string message)
+    {
+        var parts = message.Split(':');
+        int sequence = int.Parse(parts[1]);
+        string originalMessage = parts[2];
+
+        lock (queueLock)
+        {
+            deliveryQueue[sequence] = originalMessage;
+            
+            // Process in-order messages
+            while (deliveryQueue.ContainsKey(nextExpectedSequence))
+            {
+                readyList.Invoke((MethodInvoker)(() =>
+                    readyList.Items.Add($"[SEQ {nextExpectedSequence}] {deliveryQueue[nextExpectedSequence]}")));
+                
+                deliveryQueue.Remove(nextExpectedSequence);
+                nextExpectedSequence++;
             }
         }
     }
