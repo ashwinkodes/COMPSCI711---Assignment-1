@@ -31,6 +31,7 @@ public class Form1 : Form
     public Form1()
     {
         this.Text = "Middleware 5";
+        this.ClientSize = new Size(1000, 400);
         InitializeGUI();
         listener = new TcpListener(IPAddress.Any, 8086);
         listener.Start();
@@ -48,8 +49,8 @@ public class Form1 : Form
         sendButton.Click += SendMessageHandler;
 
         sentList = CreateListView("Sent Messages", 35, 50);
-        receivedList = CreateListView("Received Messages", 250, 50);
-        readyList = CreateListView("Ready Messages", 465, 50);
+        receivedList = CreateListView("Received Messages", 385, 50);
+        readyList = CreateListView("Ready Messages", 735, 50);
 
         Controls.Add(sendButton);
         Controls.Add(sentList);
@@ -63,12 +64,15 @@ public class Form1 : Form
         {
             View = View.Details,
             Location = new Point(x, y),
-            Size = new Size(200, 150),
-            HeaderStyle = ColumnHeaderStyle.Nonclickable  // Change from None to Nonclickable
+            Size = new Size(300, 200),
+            HeaderStyle = ColumnHeaderStyle.Nonclickable,
+            FullRowSelect = true,
+            GridLines = true,
+            MultiSelect = false,
+            Scrollable = true
         };
 
-        // Add column with proper width
-        listView.Columns.Add(title, listView.Width - 5);
+        listView.Columns.Add(title, -2);
 
         return listView;
     }

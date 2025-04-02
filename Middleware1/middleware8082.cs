@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using System.Windows.Forms;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Threading;
 
 public class Program
 {
@@ -22,8 +23,6 @@ public class Form1 : Form
     private Button sendButton;
     private ListView sentList, receivedList, readyList;
     private TcpListener listener;
-
-    // Sequencing components
     private int messageCounter = 1;
     private int globalSequence = 0;
     private readonly object sequenceLock = new object();
@@ -32,6 +31,7 @@ public class Form1 : Form
     public Form1()
     {
         this.Text = "Middleware 1 (Sequencer)";
+        this.ClientSize = new Size(1000, 400);
         InitializeGUI();
         listener = new TcpListener(IPAddress.Any, 8082);
         listener.Start();
@@ -48,9 +48,10 @@ public class Form1 : Form
         };
         sendButton.Click += SendMessageHandler;
 
+        // Adjust positions with more spacing (350 pixels apart instead of 215)
         sentList = CreateListView("Sent Messages", 35, 50);
-        receivedList = CreateListView("Received Messages", 250, 50);
-        readyList = CreateListView("Ready Messages", 465, 50);
+        receivedList = CreateListView("Received Messages", 385, 50);
+        readyList = CreateListView("Ready Messages", 735, 50);
 
         Controls.Add(sendButton);
         Controls.Add(sentList);
@@ -64,21 +65,20 @@ public class Form1 : Form
         {
             View = View.Details,
             Location = new Point(x, y),
-            Size = new Size(200, 150),
-            HeaderStyle = ColumnHeaderStyle.Nonclickable  // Change from None to Nonclickable
+            Size = new Size(300, 200),
+            HeaderStyle = ColumnHeaderStyle.Nonclickable,
+            FullRowSelect = true,
+            GridLines = true,
+            MultiSelect = false,
+            Scrollable = true
         };
-
-        // Add column with proper width
-        listView.Columns.Add(title, listView.Width - 5);
-
+        listView.Columns.Add(title, -2);
         return listView;
     }
-
 
     private async void SendMessageHandler(object sender, EventArgs e)
     {
         string messageId = $"Msg#{messageCounter++} from {this.Text} at {DateTime.Now:HH:mm:ss}";
-
         lock (sentList)
         {
             sentList.Items.Add(messageId);
@@ -119,21 +119,26 @@ public class Form1 : Form
 
                 if (message.StartsWith("SEQREQ:"))
                 {
-                    HandleSequenceRequest(message);
+                    await HandleSequenceRequest(message);
                 }
                 else
                 {
                     receivedList.Invoke((MethodInvoker)(() =>
                         receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
 
-                    // Handle our own messages directly
-                    lock (sequenceLock)
+                    // For sequencer's own messages, directly sequence them
+                    // For messages from other middleware, they'll request sequencing via SEQREQ
+                    if (message.Contains("from Middleware 1"))
                     {
-                        if (!messageSequences.ContainsKey(message))
+                        // Only assign sequence for our own messages that we've sent
+                        lock (sequenceLock)
                         {
-                            globalSequence++;
-                            messageSequences[message] = globalSequence;
-                            BroadcastSequence(message, globalSequence);
+                            if (!messageSequences.ContainsKey(message))
+                            {
+                                globalSequence++;
+                                messageSequences[message] = globalSequence;
+                                BroadcastSequence(message, globalSequence);
+                            }
                         }
                     }
                 }
@@ -145,48 +150,59 @@ public class Form1 : Form
         }
     }
 
-    private void HandleSequenceRequest(string message)
+    private async Task HandleSequenceRequest(string message)
     {
         var parts = message.Split(new[] { ':' }, 3);
         if (parts.Length < 3) return;
-
         string originalMessage = parts[1];
+
+        int sequence;
 
         lock (sequenceLock)
         {
-            if (!messageSequences.ContainsKey(originalMessage))
+            // Check if this message already has a sequence number
+            if (messageSequences.ContainsKey(originalMessage))
             {
-                globalSequence++;
-                messageSequences[originalMessage] = globalSequence;
-                BroadcastSequence(originalMessage, globalSequence);
+                // Use existing sequence number
+                sequence = messageSequences[originalMessage];
+            }
+            else
+            {
+                // Assign new sequence number
+                sequence = ++globalSequence;
+                messageSequences[originalMessage] = sequence;
             }
         }
+
+        // Broadcast with the correct sequence number
+        await BroadcastSequence(originalMessage, sequence);
     }
 
-    private async void BroadcastSequence(string message, int sequence)
+private async Task BroadcastSequence(string message, int sequence)
+{
+    string sequenceMessage = $"SEQ:{sequence}:{message}";
+    
+    // Process locally FIRST
+    ProcessSequenceMessage(sequenceMessage);
+    
+    // Send to all OTHER middleware (not self again since we already processed it)
+    foreach (int port in new[] { 8083, 8084, 8085, 8086 })
     {
-        string sequenceMessage = $"SEQ:{sequence}:{message}";
-
-        // Process the sequence message locally first
-        ProcessSequenceMessage(sequenceMessage);
-
-        // Then broadcast to others
-        foreach (int port in new[] { 8083, 8084, 8085, 8086 })
+        try
         {
-            try
+            using (TcpClient client = new TcpClient("localhost", port))
             {
-                using (TcpClient client = new TcpClient("localhost", port))
-                {
-                    byte[] data = Encoding.UTF8.GetBytes(sequenceMessage);
-                    await client.GetStream().WriteAsync(data, 0, data.Length);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error broadcasting to port {port}: {ex.Message}");
+                byte[] data = Encoding.UTF8.GetBytes(sequenceMessage);
+                await client.GetStream().WriteAsync(data, 0, data.Length);
             }
         }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error broadcasting to port {port}: {ex.Message}");
+        }
     }
+}
+
 
     private void ProcessSequenceMessage(string message)
     {
@@ -197,5 +213,4 @@ public class Form1 : Form
         readyList.Invoke((MethodInvoker)(() =>
             readyList.Items.Add($"[SEQ {sequence}] {originalMessage}")));
     }
-
 }
