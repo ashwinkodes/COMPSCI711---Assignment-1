@@ -32,7 +32,6 @@ public class Form1 : Form
         this.Text = "Middleware 4";
         this.ClientSize = new Size(1000, 400);
         InitializeGUI();
-        
         listener = new TcpListener(IPAddress.Any, 8085);
         listener.Start();
         ListenForClientsAsync();
@@ -60,7 +59,7 @@ public class Form1 : Form
 
     private ListView CreateListView(string title, int x, int y)
     {
-        return new ListView
+        var listView = new ListView
         {
             View = View.Details,
             Location = new Point(x, y),
@@ -69,16 +68,23 @@ public class Form1 : Form
             FullRowSelect = true,
             GridLines = true,
             MultiSelect = false,
-            Scrollable = true,
-            Columns = { title }
+            Scrollable = true
         };
+
+        var columnHeader = new ColumnHeader { Text = title };
+        listView.Columns.Add(columnHeader);
+        listView.AutoResizeColumns(ColumnHeaderAutoResizeStyle.HeaderSize);
+
+        return listView;
     }
 
     private async void SendMessageHandler(object sender, EventArgs e)
     {
-        string messageId = $"Msg#{messageCounter++} from {this.Text}";
-        lock (sentList) sentList.Items.Add(messageId);
+        string messageId = $"Msg#{messageCounter++} from Middleware 4 at {DateTime.Now:HH:mm:ss}";
         
+        lock (sentList)
+            sentList.Items.Add(messageId);
+
         using (TcpClient networkClient = new TcpClient("localhost", 8081))
         {
             byte[] data = Encoding.UTF8.GetBytes(messageId);
@@ -110,19 +116,17 @@ public class Form1 : Form
             {
                 byte[] buffer = new byte[1024];
                 int bytesRead = await client.GetStream().ReadAsync(buffer, 0, buffer.Length);
-                string message = Encoding.UTF8.GetString(buffer, 0, bytesRead);
+                string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim('\0');
 
                 if (message.StartsWith("SEQ:"))
-                {
                     ProcessSequenceMessage(message);
-                }
                 else
-                {
                     receivedList.Invoke((MethodInvoker)(() =>
                         receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
-                    
+                
+                // Request sequence assignment for non-sequenced messages
+                if (!message.StartsWith("SEQ:"))
                     await RequestSequenceAssignment(message);
-                }
             }
         }
         catch (Exception ex)
@@ -133,7 +137,7 @@ public class Form1 : Form
 
     private async Task RequestSequenceAssignment(string message)
     {
-        using (TcpClient seqClient = new TcpClient("localhost", 8082))
+        using (TcpClient seqClient = new TcpClient("localhost", 8082)) // Connect to Middleware 1 (Sequencer)
         {
             string request = $"SEQREQ:{message}:{DateTime.UtcNow.Ticks}";
             byte[] data = Encoding.UTF8.GetBytes(request);
@@ -144,13 +148,21 @@ public class Form1 : Form
     private void ProcessSequenceMessage(string message)
     {
         var parts = message.Split(':');
-        int sequence = int.Parse(parts[1]);
+        
+        if (parts.Length < 3) return; // Invalid message format
+        
+        int sequenceNumber;
+        
+        if (!int.TryParse(parts[1], out sequenceNumber))
+            return; // Invalid sequence number
+        
         string originalMessage = parts[2];
 
         lock (queueLock)
         {
-            deliveryQueue[sequence] = originalMessage;
-            
+            deliveryQueue[sequenceNumber] = originalMessage;
+
+            // Process in-order messages
             while (deliveryQueue.ContainsKey(nextExpectedSequence))
             {
                 readyList.Invoke((MethodInvoker)(() =>
