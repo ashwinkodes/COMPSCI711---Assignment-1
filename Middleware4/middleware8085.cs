@@ -63,18 +63,19 @@ public class Form1 : Form
         {
             View = View.Details,
             Location = new Point(x, y),
-            Size = new Size(300, 200),
+            Size = new Size(350, 200),
             HeaderStyle = ColumnHeaderStyle.Nonclickable,
             FullRowSelect = true,
             GridLines = true,
             MultiSelect = false,
             Scrollable = true
         };
-        var columnHeader = new ColumnHeader { Text = title };
+        var columnHeader = new ColumnHeader { Text = title, Width = 330 };
         listView.Columns.Add(columnHeader);
         listView.AutoResizeColumns(ColumnHeaderAutoResizeStyle.HeaderSize);
         return listView;
     }
+
 
     private async void SendMessageHandler(object sender, EventArgs e)
     {
@@ -113,7 +114,7 @@ public class Form1 : Form
                 byte[] buffer = new byte[1024];
                 int bytesRead = await client.GetStream().ReadAsync(buffer, 0, buffer.Length);
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim('\0');
-                
+
                 if (!message.StartsWith("SEQ:") && !message.StartsWith("SEQREQ:"))
                 {
                     string coreMessage = ExtractCoreMessage(message);
@@ -127,7 +128,7 @@ public class Form1 : Form
                         }
                     }
                 }
-                
+
                 if (message.StartsWith("SEQ:"))
                     ProcessSequenceMessage(message);
                 else if (!message.StartsWith("SEQREQ:"))
@@ -154,15 +155,14 @@ public class Form1 : Form
     {
         var parts = message.Split(':');
         if (parts.Length < 3) return;
-        
+
         int sequenceNumber;
         if (!int.TryParse(parts[1], out sequenceNumber))
             return;
-            
+
         string originalMessage = parts[2];
         string coreMessage = ExtractCoreMessage(originalMessage);
-        
-        // Ensure the message is in the Received list
+
         lock (processedLock)
         {
             if (!processedMessages.Contains(coreMessage))
@@ -172,11 +172,11 @@ public class Form1 : Form
                     receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {originalMessage}")));
             }
         }
-        
+
         lock (queueLock)
         {
             deliveryQueue[sequenceNumber] = originalMessage;
-            
+
             while (deliveryQueue.ContainsKey(nextExpectedSequence))
             {
                 readyList.Invoke((MethodInvoker)(() =>
