@@ -29,6 +29,8 @@ public class Form1 : Form
     private SortedDictionary<int, string> deliveryQueue = new SortedDictionary<int, string>();
     private int nextExpectedSequence = 1;
     private readonly object queueLock = new object();
+    private HashSet<string> processedMessages = new HashSet<string>();
+    private readonly object processedLock = new object();
 
     public Form1()
     {
@@ -114,19 +116,26 @@ public class Form1 : Form
                 byte[] buffer = new byte[1024];
                 int bytesRead = await client.GetStream().ReadAsync(buffer, 0, buffer.Length);
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim('\0');
-
-                // Only add actual multicast messages to the Received list
+                
                 if (!message.StartsWith("SEQ:") && !message.StartsWith("SEQREQ:"))
                 {
-                    receivedList.Invoke((MethodInvoker)(() =>
-                        receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
+                    string coreMessage = ExtractCoreMessage(message);
+                    lock (processedLock)
+                    {
+                        if (!processedMessages.Contains(coreMessage))
+                        {
+                            processedMessages.Add(coreMessage);
+                            receivedList.Invoke((MethodInvoker)(() =>
+                                receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
+                        }
+                    }
                 }
-
+                
                 if (message.StartsWith("SEQ:"))
                     ProcessSequenceMessage(message);
                 else if (!message.StartsWith("SEQREQ:"))
                     await RequestSequenceAssignment(message);
-                else if (this.Text.Contains("1")) // Only Middleware 1 handles sequence requests
+                else if (this.Text.Contains("1"))
                     await HandleSequenceRequest(message);
             }
         }
@@ -135,7 +144,6 @@ public class Form1 : Form
             Console.WriteLine($"Client processing error: {ex.Message}");
         }
     }
-
 
     private async Task HandleSequenceRequest(string message)
     {
@@ -176,69 +184,42 @@ public class Form1 : Form
     private void ProcessSequenceMessage(string message)
     {
         var parts = message.Split(':');
-        if (parts.Length < 3) return; // Invalid message format
-
+        if (parts.Length < 3) return;
+        
         int sequenceNumber;
         if (!int.TryParse(parts[1], out sequenceNumber))
-            return; // Invalid sequence number
-
+            return;
+            
         string originalMessage = parts[2];
-
-        // Extract just the core message without timestamps for comparison
         string coreMessage = ExtractCoreMessage(originalMessage);
-
+        
+        // Ensure the message is in the Received list
+        lock (processedLock)
+        {
+            if (!processedMessages.Contains(coreMessage))
+            {
+                processedMessages.Add(coreMessage);
+                receivedList.Invoke((MethodInvoker)(() =>
+                    receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {originalMessage}")));
+            }
+        }
+        
         lock (queueLock)
         {
             deliveryQueue[sequenceNumber] = originalMessage;
-
-            // Process in-order messages
+            
             while (deliveryQueue.ContainsKey(nextExpectedSequence))
             {
-                string messageToProcess = deliveryQueue[nextExpectedSequence];
-                string coreMessageToProcess = ExtractCoreMessage(messageToProcess);
-
-                // Check if any version of this message exists in the Received list
-                bool messageInReceivedList = false;
-
-                receivedList.Invoke((MethodInvoker)(() =>
-                {
-                    foreach (ListViewItem item in receivedList.Items)
-                    {
-                        // Extract core message for comparison
-                        string itemText = item.Text;
-                        if (itemText.Contains("]"))
-                            itemText = itemText.Substring(itemText.IndexOf("]") + 1).Trim();
-
-                        string coreItemText = ExtractCoreMessage(itemText);
-
-                        if (coreItemText == coreMessageToProcess)
-                        {
-                            messageInReceivedList = true;
-                            break;
-                        }
-                    }
-
-                    // Add to Received list if not already there
-                    if (!messageInReceivedList)
-                    {
-                        receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {messageToProcess}");
-                    }
-                }));
-
-                // Now add to Ready list
                 readyList.Invoke((MethodInvoker)(() =>
-                    readyList.Items.Add($"[SEQ {nextExpectedSequence}] {messageToProcess}")));
-
+                    readyList.Items.Add($"[SEQ {nextExpectedSequence}] {deliveryQueue[nextExpectedSequence]}")));
                 deliveryQueue.Remove(nextExpectedSequence);
                 nextExpectedSequence++;
             }
         }
     }
 
-    // Helper method to extract the core message without timestamps
     private string ExtractCoreMessage(string message)
     {
-        // Extract just "Msg#X from Middleware Y" without the timestamp
         if (message.Contains("Msg#") && message.Contains("from Middleware"))
         {
             int startIndex = message.IndexOf("Msg#");
@@ -246,8 +227,9 @@ public class Form1 : Form
             if (endIndex > startIndex)
                 return message.Substring(startIndex, endIndex - startIndex).Trim();
         }
-        return message; // Return original if pattern not found
+        return message;
     }
+
     private async Task RequestSequenceAssignment(string message)
     {
         using (TcpClient seqClient = new TcpClient("localhost", 8082))
