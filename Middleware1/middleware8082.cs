@@ -32,7 +32,7 @@ public class Form1 : Form
 
     public Form1()
     {
-        this.Text = "Middleware 1 (Sequencer)";
+        this.Text = "Middleware 1 (Sender)";
         this.ClientSize = new Size(1000, 400);
         InitializeGUI();
         listener = new TcpListener(IPAddress.Any, 8082);
