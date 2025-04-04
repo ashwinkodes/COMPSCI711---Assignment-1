@@ -32,7 +32,7 @@ public class Form1 : Form
     public Form1()
     {
         this.Text = "Middleware 3";
-        this.ClientSize = new Size(1000, 400);
+        this.ClientSize = new Size(1100, 400);
         InitializeGUI();
         listener = new TcpListener(IPAddress.Any, 8084);
         listener.Start();
@@ -63,23 +63,21 @@ public class Form1 : Form
         {
             View = View.Details,
             Location = new Point(x, y),
-            Size = new Size(350, 200),
+            Size = new Size(350, 300),
             HeaderStyle = ColumnHeaderStyle.Nonclickable,
             FullRowSelect = true,
             GridLines = true,
             MultiSelect = false,
             Scrollable = true
         };
-        var columnHeader = new ColumnHeader { Text = title, Width = 330 };
+        var columnHeader = new ColumnHeader { Text = title, Width = 350 };
         listView.Columns.Add(columnHeader);
-        listView.AutoResizeColumns(ColumnHeaderAutoResizeStyle.HeaderSize);
         return listView;
     }
 
-
     private async void SendMessageHandler(object sender, EventArgs e)
     {
-        string messageId = $"Msg#{messageCounter++} from {this.Text} at {DateTime.Now:HH:mm:ss}";
+        string messageId = $"Msg#{messageCounter++} from {this.Text} at {DateTime.Now:HH:mm:ss.fff}";
         lock (sentList)
             sentList.Items.Add(messageId);
         using (TcpClient networkClient = new TcpClient("localhost", 8081))
@@ -114,7 +112,6 @@ public class Form1 : Form
                 byte[] buffer = new byte[1024];
                 int bytesRead = await client.GetStream().ReadAsync(buffer, 0, buffer.Length);
                 string message = Encoding.UTF8.GetString(buffer, 0, bytesRead).Trim('\0');
-
                 if (!message.StartsWith("SEQ:") && !message.StartsWith("SEQREQ:"))
                 {
                     string coreMessage = ExtractCoreMessage(message);
@@ -123,8 +120,13 @@ public class Form1 : Form
                         if (!processedMessages.Contains(coreMessage))
                         {
                             processedMessages.Add(coreMessage);
+                            string messageWithoutTimestamp = message;
+                            if (message.Contains(" at "))
+                            {
+                                messageWithoutTimestamp = message.Substring(0, message.IndexOf(" at "));
+                            }
                             receivedList.Invoke((MethodInvoker)(() =>
-                                receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {message}")));
+                                receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss.fff}] {messageWithoutTimestamp}")));
                         }
                     }
                 }
@@ -155,32 +157,39 @@ public class Form1 : Form
     {
         var parts = message.Split(':');
         if (parts.Length < 3) return;
-
         int sequenceNumber;
         if (!int.TryParse(parts[1], out sequenceNumber))
             return;
-
         string originalMessage = parts[2];
         string coreMessage = ExtractCoreMessage(originalMessage);
-
         lock (processedLock)
         {
             if (!processedMessages.Contains(coreMessage))
             {
                 processedMessages.Add(coreMessage);
+                string messageWithoutTimestamp = originalMessage;
+                if (originalMessage.Contains(" at "))
+                {
+                    messageWithoutTimestamp = originalMessage.Substring(0, originalMessage.IndexOf(" at "));
+                }
                 receivedList.Invoke((MethodInvoker)(() =>
-                    receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss}] {originalMessage}")));
+                    receivedList.Items.Add($"[{DateTime.Now:HH:mm:ss.fff}] {messageWithoutTimestamp}")));
             }
         }
 
         lock (queueLock)
         {
             deliveryQueue[sequenceNumber] = originalMessage;
-
             while (deliveryQueue.ContainsKey(nextExpectedSequence))
             {
+                string timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+                string messageWithoutTimestamp = deliveryQueue[nextExpectedSequence];
+                if (messageWithoutTimestamp.Contains(" at "))
+                {
+                    messageWithoutTimestamp = messageWithoutTimestamp.Substring(0, messageWithoutTimestamp.IndexOf(" at "));
+                }
                 readyList.Invoke((MethodInvoker)(() =>
-                    readyList.Items.Add($"[SEQ {nextExpectedSequence}] {deliveryQueue[nextExpectedSequence]}")));
+                    readyList.Items.Add($"[{timestamp}] SEQ {nextExpectedSequence}: {messageWithoutTimestamp}")));
                 deliveryQueue.Remove(nextExpectedSequence);
                 nextExpectedSequence++;
             }
